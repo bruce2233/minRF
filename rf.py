@@ -2,8 +2,23 @@
 import argparse
 
 import torch
+import ml_collections
+from dataset import get_ds
+ 
+config = ml_collections.ConfigDict()
+config.data = data = ml_collections.ConfigDict()
+data.image_size = 32
+# data.image_size = 224
+data.num_channels = 3
+# data.dataset = 'sketchy'
+data.dataset = 'sketchy32'
+# data.dataset = 'cifar'
 
+config.training = training = ml_collections.ConfigDict()
+training.batch_size = 32
 
+ds, transform, model = get_ds(config, data.dataset)
+# ds = fdatasets(transform=transform)
 class RF:
     def __init__(self, model, ln=True):
         self.model = model
@@ -57,42 +72,17 @@ if __name__ == "__main__":
 
     import wandb
     from dit import DiT_Llama
-
+    from glob import glob
+    import os, logging
+    
+    logging.basicConfig()
+    
+    results_dir = "results"
     parser = argparse.ArgumentParser(description="use cifar?")
-    parser.add_argument("--cifar", action="store_true")
-    args = parser.parse_args()
-    CIFAR = args.cifar
-
-    if CIFAR:
-        dataset_name = "cifar"
-        fdatasets = datasets.CIFAR10
-        transform = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.RandomCrop(32),
-                transforms.RandomHorizontalFlip(),
-                transforms.Normalize((0.5,), (0.5,)),
-            ]
-        )
-        channels = 3
-        model = DiT_Llama(
-            channels, 32, dim=256, n_layers=10, n_heads=8, num_classes=10
-        ).cuda()
-
-    else:
-        dataset_name = "mnist"
-        fdatasets = datasets.MNIST
-        transform = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Pad(2),
-                transforms.Normalize((0.5,), (0.5,)),
-            ]
-        )
-        channels = 1
-        model = DiT_Llama(
-            channels, 32, dim=64, n_layers=6, n_heads=4, num_classes=10
-        ).cuda()
+    experiment_index = len(glob(f"{results_dir}/*"))
+    experiment_dir = f"{results_dir}/{experiment_index:03d}-{config.data.dataset.replace('/','-')}"
+    os.makedirs(experiment_dir, exist_ok=True)
+    logging.info(f"experiment dir: {experiment_dir}")
 
     model_size = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Number of parameters: {model_size}, {model_size / 1e6}M")
@@ -101,10 +91,10 @@ if __name__ == "__main__":
     optimizer = optim.Adam(model.parameters(), lr=5e-4)
     criterion = torch.nn.MSELoss()
 
-    mnist = fdatasets(root="./data", train=True, download=True, transform=transform)
-    dataloader = DataLoader(mnist, batch_size=256, shuffle=True, drop_last=True)
+    # mnist = fdatasets(root="./data", train=True, download=True, transform=transform)
+    dataloader = DataLoader(ds, batch_size=config.training.batch_size, shuffle=True, drop_last=True)
 
-    wandb.init(project=f"rf_{dataset_name}")
+    wandb.init(project=f"rf_{config.data.dataset}")
 
     for epoch in range(100):
         lossbin = {i: 0 for i in range(10)}
@@ -134,7 +124,7 @@ if __name__ == "__main__":
             cond = torch.arange(0, 16).cuda() % 10
             uncond = torch.ones_like(cond) * 10
 
-            init_noise = torch.randn(16, channels, 32, 32).cuda()
+            init_noise = torch.randn(16, config.data.num_channels, 32, 32).cuda()
             images = rf.sample(init_noise, cond, uncond)
             # image sequences to gif
             gif = []
@@ -148,7 +138,7 @@ if __name__ == "__main__":
                 gif.append(Image.fromarray(img))
 
             gif[0].save(
-                f"contents/sample_{epoch}.gif",
+                f"{experiment_dir}//sample_{epoch}.gif",
                 save_all=True,
                 append_images=gif[1:],
                 duration=100,
@@ -156,6 +146,6 @@ if __name__ == "__main__":
             )
 
             last_img = gif[-1]
-            last_img.save(f"contents/sample_{epoch}_last.png")
+            last_img.save(f"{experiment_dir}/sample_{epoch}_last.png")
 
         rf.model.train()
