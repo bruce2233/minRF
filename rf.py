@@ -4,6 +4,7 @@ import argparse
 import torch
 import ml_collections
 from dataset import get_ds
+from tqdm import tqdm
  
 config = ml_collections.ConfigDict()
 config.data = data = ml_collections.ConfigDict()
@@ -25,6 +26,11 @@ class RF:
         self.ln = ln
 
     def forward(self, x, cond):
+        if type(x) is list:
+            z1 = x[0]
+            x = x[1]
+        else:
+            z1 = torch.randn_like(x)
         b = x.size(0)
         if self.ln:
             nt = torch.randn((b,)).to(x.device)
@@ -32,7 +38,6 @@ class RF:
         else:
             t = torch.rand((b,)).to(x.device)
         texp = t.view([b, *([1] * len(x.shape[1:]))])
-        z1 = torch.randn_like(x)
         zt = (1 - texp) * x + texp * z1
         vtheta = self.model(zt, t, cond)
         batchwise_mse = ((z1 - x - vtheta) ** 2).mean(dim=list(range(1, len(x.shape))))
@@ -78,6 +83,9 @@ if __name__ == "__main__":
     logging.basicConfig()
     
     results_dir = "results"
+    z1_type = "z1"
+    # z1_type = "noise"
+    
     parser = argparse.ArgumentParser(description="use cifar?")
     experiment_index = len(glob(f"{results_dir}/*"))
     experiment_dir = f"{results_dir}/{experiment_index:03d}-{config.data.dataset.replace('/','-')}"
@@ -96,11 +104,18 @@ if __name__ == "__main__":
 
     wandb.init(project=f"rf_{config.data.dataset}")
 
-    for epoch in range(100):
+    for epoch in tqdm(range(1000)):
+
         lossbin = {i: 0 for i in range(10)}
         losscnt = {i: 1e-6 for i in range(10)}
         for i, (x, c) in tqdm(enumerate(dataloader)):
-            x, c = x.cuda(), c.cuda()
+            # if i == 10:
+            #     break
+            if type(x) is list:
+                x = [i.cuda() for i in x]
+            else: 
+                x = x.cuda()
+            c = c.cuda()
             optimizer.zero_grad()
             loss, blsct = rf.forward(x, c)
             loss.backward()
@@ -119,13 +134,17 @@ if __name__ == "__main__":
 
         wandb.log({f"lossbin_{i}": lossbin[i] / losscnt[i] for i in range(10)})
 
+        #%%
         rf.model.eval()
         with torch.no_grad():
-            cond = torch.arange(0, 16).cuda() % 10
+            cond = torch.arange(0, config.training.batch_size).cuda() % 10
             uncond = torch.ones_like(cond) * 10
 
-            init_noise = torch.randn(16, config.data.num_channels, 32, 32).cuda()
-            images = rf.sample(init_noise, cond, uncond)
+            if z1_type == 'noise':
+                z1_eval = torch.randn(config.training.batch_size, config.data.num_channels, 32, 32).cuda()
+            elif z1_type == 'z1':
+                z1_eval = next(iter(dataloader))[0][0].cuda()
+            images = rf.sample(z1_eval, cond, uncond)
             # image sequences to gif
             gif = []
             for image in images:
@@ -138,7 +157,7 @@ if __name__ == "__main__":
                 gif.append(Image.fromarray(img))
 
             gif[0].save(
-                f"{experiment_dir}//sample_{epoch}.gif",
+                f"{experiment_dir}/sample_{epoch}.gif",
                 save_all=True,
                 append_images=gif[1:],
                 duration=100,

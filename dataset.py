@@ -48,12 +48,15 @@ class Sketchy32Dataset(Dataset):
         if self.transform:
             photo_img = self.transform(photo_img)
             sketch_img = self.transform(sketch_img)
-        return sketch_img, random.randint(0,9)
+            # sketch_photo_chunk = torch.stack([sketch_img, photo_img])
+        return (sketch_img, photo_img), random.randint(0,9)
         # return photo_img, sketch_img
 def get_sketchy_pair(photo_path):
     sketch_path = (photo_path.rsplit('.', 1)[0] + '-1.' + photo_path.rsplit('.', 1)[1]).replace('photo', 'sketch').replace('jpg','png')
     return photo_path, sketch_path
 
+# class CIFAR10NoClass(datasets.CIFAR10):
+    # ds = fdatasets(root="./data", train=True, download=True, transform=transform)  
 def get_ds(config, ds_name):
     if ds_name == 'cifar':
         fdatasets = datasets.CIFAR10
