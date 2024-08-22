@@ -1,5 +1,5 @@
 # Code heavily based on https://github.com/Alpha-VLLM/LLaMA2-Accessory
-# this is modeling code for DiT-LLaMA model
+# this is modeling code for  model
 
 import math
 
@@ -230,6 +230,7 @@ class DiT_Llama(nn.Module):
     def __init__(
         self,
         in_channels=3,
+        out_channels=3,
         input_size=32,
         patch_size=2,
         dim=512,
@@ -244,7 +245,7 @@ class DiT_Llama(nn.Module):
         super().__init__()
 
         self.in_channels = in_channels
-        self.out_channels = in_channels
+        self.out_channels = out_channels
         self.input_size = input_size
         self.patch_size = patch_size
 
