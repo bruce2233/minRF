@@ -5,7 +5,8 @@ import torch
 import ml_collections
 from dataset import get_ds
 from tqdm import tqdm
- 
+
+
 # ds = fdatasets(transform=transform)
 class RF:
     def __init__(self, model, ln=True):
@@ -66,14 +67,16 @@ if __name__ == "__main__":
     from dit import DiT_Llama
     from glob import glob
     import os, logging
-    
+
     config = ml_collections.ConfigDict()
     config.data = data = ml_collections.ConfigDict()
-    data.image_size = 32
+    data.image_size = 16
     # data.image_size = 224
+    # data.num_channels = 768
     data.num_channels = 3
+    data.output_channels = 3
     # data.dataset = 'sketchy'
-    data.dataset = 'sketchy32nocond'
+    data.dataset = "sketchy32nocond"
     # data.dataset = 'cifar'
 
     config.training = training = ml_collections.ConfigDict()
@@ -81,23 +84,26 @@ if __name__ == "__main__":
 
     ds, transform = get_ds(config, data.dataset)
     logging.basicConfig()
-    
+
     results_dir = "results"
     # z1_type = "z1"
     z1_type = "noise"
-    
+
     parser = argparse.ArgumentParser(description="use cifar?")
     experiment_index = len(glob(f"{results_dir}/*"))
-    experiment_dir = f"{results_dir}/{experiment_index:03d}-{config.data.dataset.replace('/','-')}"
+    experiment_dir = (
+        f"{results_dir}/{experiment_index:03d}-{config.data.dataset.replace('/','-')}"
+    )
     os.makedirs(experiment_dir, exist_ok=True)
     logging.info(f"experiment dir: {experiment_dir}")
 
-        # create model
+    # create model
     if config.data.dataset == "sketchy32" or "sketchy" or "cifar" or "sketchy32nocond":
         # channels = 3
         model = DiT_Llama(
-            config.data.num_channels,
-            32,
+            in_channels=config.data.num_channels,
+            out_channels=config.data.output_channels,
+            input_size=config.data.image_size,
             dim=256,
             n_layers=10,
             n_heads=8,
@@ -106,18 +112,26 @@ if __name__ == "__main__":
     elif config.data.dataset == "mnist":
         # channels = 1
         model = DiT_Llama(
-            config.data.num_channels, 32, dim=64, n_layers=6, n_heads=4, num_classes=10
+            in_channels=config.data.num_channels,
+            out_channels=config.data.output_channels,
+            input_size=config.data.image_size,
+            dim=64,
+            n_layers=6,
+            n_heads=4,
+            num_classes=10,
         ).cuda()
-        
+
     model_size = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Number of parameters: {model_size}, {model_size / 1e6}M")
     rf = RF(model)
-  
+
     optimizer = optim.Adam(model.parameters(), lr=5e-4)
     criterion = torch.nn.MSELoss()
 
     # mnist = fdatasets(root="./data", train=True, download=True, transform=transform)
-    dataloader = DataLoader(ds, batch_size=config.training.batch_size, shuffle=True, drop_last=True)
+    dataloader = DataLoader(
+        ds, batch_size=config.training.batch_size, shuffle=True, drop_last=True
+    )
 
     wandb.init(project=f"rf_{config.data.dataset}")
 
@@ -127,21 +141,21 @@ if __name__ == "__main__":
         losscnt = {i: 1e-6 for i in range(10)}
         for i, (x, c) in tqdm(enumerate(dataloader)):
             # if i == 10:
-                # break
+            # break
             if type(x) is list:
                 x = [i.cuda() for i in x]
-            else: 
+            else:
                 x = x.cuda()
             c = c.cuda()
             optimizer.zero_grad()
             loss, blsct = rf.forward(x, c)
             loss.backward()
-            
-            for name, parms in model.named_parameters():	
-                if 'weight' in name and parms.requires_grad:
+
+            for name, parms in model.named_parameters():
+                if "weight" in name and parms.requires_grad:
                     wandb.log({name: parms.grad.mean()})
             #   print('-->name:', name, '-->grad_requirs:',parms.requires_grad,  ' -->grad_value:',parms.grad.mean())
-  
+
             optimizer.step()
 
             wandb.log({"loss": loss.item()})
@@ -157,15 +171,17 @@ if __name__ == "__main__":
 
         wandb.log({f"lossbin_{i}": lossbin[i] / losscnt[i] for i in range(10)})
 
-        #%%
+        # %%
         rf.model.eval()
         with torch.no_grad():
             cond = torch.arange(0, config.training.batch_size).cuda() % 10
             uncond = torch.ones_like(cond) * 10
 
-            if z1_type == 'noise':
-                z1_eval = torch.randn(config.training.batch_size, config.data.num_channels, 32, 32).cuda()
-            elif z1_type == 'z1':
+            if z1_type == "noise":
+                z1_eval = torch.randn(
+                    config.training.batch_size, config.data.num_channels, 32, 32
+                ).cuda()
+            elif z1_type == "z1":
                 z1_eval = next(iter(dataloader))[0][0].cuda()
             images = rf.sample(z1_eval, cond, uncond)
             # image sequences to gif
