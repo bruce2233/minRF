@@ -5,7 +5,27 @@ import torch
 import ml_collections
 from dataset import get_ds
 from tqdm import tqdm
- 
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
+import torch.distributed as dist
+
+config = ml_collections.ConfigDict()
+config.data = data = ml_collections.ConfigDict()
+data.image_size = 32
+# data.image_size = 224
+data.num_channels = 3
+# data.dataset = 'sketchy'
+data.dataset = "sketchy32nocond"
+# data.dataset = 'cifar'
+
+config.training = training = ml_collections.ConfigDict()
+training.batch_size = 32
+training.global_batch_size = training.batch_size * 8
+training.global_seed = 0
+
+ds, transform = get_ds(config, data.dataset)
+
+
 # ds = fdatasets(transform=transform)
 class RF:
     def __init__(self, model, ln=True):
@@ -66,33 +86,38 @@ if __name__ == "__main__":
     from dit import DiT_Llama
     from glob import glob
     import os, logging
-    
-    config = ml_collections.ConfigDict()
-    config.data = data = ml_collections.ConfigDict()
-    data.image_size = 32
-    # data.image_size = 224
-    data.num_channels = 3
-    # data.dataset = 'sketchy'
-    data.dataset = 'sketchy32nocond'
-    # data.dataset = 'cifar'
 
-    config.training = training = ml_collections.ConfigDict()
-    training.batch_size = 32
-
-    ds, transform = get_ds(config, data.dataset)
+    ################### config ####################
     logging.basicConfig()
-    
+
     results_dir = "results"
     # z1_type = "z1"
     z1_type = "noise"
-    
-    parser = argparse.ArgumentParser(description="use cifar?")
-    experiment_index = len(glob(f"{results_dir}/*"))
-    experiment_dir = f"{results_dir}/{experiment_index:03d}-{config.data.dataset.replace('/','-')}"
-    os.makedirs(experiment_dir, exist_ok=True)
-    logging.info(f"experiment dir: {experiment_dir}")
 
-        # create model
+    parser = argparse.ArgumentParser(description="use cifar?")
+
+    ################## distributed ################
+    assert torch.cuda.is_available(), "Training currently requires at least one GPU."
+
+    # Setup DDP:
+    dist.init_process_group("nccl")
+    assert (
+        config.training.global_batch_size % dist.get_world_size() == 0
+    ), f"Batch size must be divisible by world size."
+    rank = dist.get_rank()
+    device = rank % torch.cuda.device_count()
+    print(rank, device)
+    seed = config.training.global_seed * dist.get_world_size() + rank
+    torch.manual_seed(seed)
+    torch.cuda.set_device(device)
+
+    if rank == 0:
+        experiment_index = len(glob(f"{results_dir}/*"))
+        experiment_dir = f"{results_dir}/{experiment_index:03d}-{config.data.dataset.replace('/','-')}"
+        os.makedirs(experiment_dir, exist_ok=True)
+        logging.info(f"experiment dir: {experiment_dir}")
+
+    # create model
     if config.data.dataset == "sketchy32" or "sketchy" or "cifar" or "sketchy32nocond":
         # channels = 3
         model = DiT_Llama(
@@ -108,18 +133,34 @@ if __name__ == "__main__":
         model = DiT_Llama(
             config.data.num_channels, 32, dim=64, n_layers=6, n_heads=4, num_classes=10
         ).cuda()
-        
+    model = DDP(model.to(device), device_ids=[rank])
+    rf = RF(model)
+    
     model_size = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Number of parameters: {model_size}, {model_size / 1e6}M")
-    rf = RF(model)
-  
+    # data
+    sampler = DistributedSampler(
+        ds,
+        num_replicas=dist.get_world_size(),
+        rank=rank,
+        shuffle=False,
+        seed=config.training.global_seed,
+    )
+    
+    dataloader = DataLoader(
+        ds,
+        sampler=sampler,
+        batch_size=config.training.batch_size,
+        shuffle=False,
+        pin_memory=True,
+        drop_last=True,
+    )
+
     optimizer = optim.Adam(model.parameters(), lr=5e-4)
     criterion = torch.nn.MSELoss()
 
-    # mnist = fdatasets(root="./data", train=True, download=True, transform=transform)
-    dataloader = DataLoader(ds, batch_size=config.training.batch_size, shuffle=True, drop_last=True)
-
-    wandb.init(project=f"rf_{config.data.dataset}")
+    # log
+    wandb.init(project=f"rf_{config.data.dataset}", group='DDPrf')
 
     for epoch in tqdm(range(1000)):
 
@@ -127,21 +168,15 @@ if __name__ == "__main__":
         losscnt = {i: 1e-6 for i in range(10)}
         for i, (x, c) in tqdm(enumerate(dataloader)):
             # if i == 10:
-                # break
+            #     break
             if type(x) is list:
                 x = [i.cuda() for i in x]
-            else: 
+            else:
                 x = x.cuda()
             c = c.cuda()
             optimizer.zero_grad()
             loss, blsct = rf.forward(x, c)
             loss.backward()
-            
-            for name, parms in model.named_parameters():	
-                if 'weight' in name and parms.requires_grad:
-                    wandb.log({name: parms.grad.mean()})
-            #   print('-->name:', name, '-->grad_requirs:',parms.requires_grad,  ' -->grad_value:',parms.grad.mean())
-  
             optimizer.step()
 
             wandb.log({"loss": loss.item()})
@@ -156,38 +191,45 @@ if __name__ == "__main__":
             print(f"Epoch: {epoch}, {i} range loss: {lossbin[i] / losscnt[i]}")
 
         wandb.log({f"lossbin_{i}": lossbin[i] / losscnt[i] for i in range(10)})
+        
+        # evaluation and visualize     
+        def eval():
+            rf.model.eval()
+            
+            with torch.no_grad():
+                cond = torch.arange(0, config.training.batch_size).cuda() % 10
+                uncond = torch.ones_like(cond) * 10
 
-        #%%
-        rf.model.eval()
-        with torch.no_grad():
-            cond = torch.arange(0, config.training.batch_size).cuda() % 10
-            uncond = torch.ones_like(cond) * 10
+                if z1_type == "noise":
+                    z1_eval = torch.randn(
+                        config.training.batch_size, config.data.num_channels, 32, 32
+                    ).cuda()
+                elif z1_type == "z1":
+                    z1_eval = next(iter(dataloader))[0][0].cuda()
+                images = rf.sample(z1_eval, cond, uncond)
+                # image sequences to gif
+                gif = []
+                for image in images:
+                    # unnormalize
+                    image = image * 0.5 + 0.5
+                    image = image.clamp(0, 1)
+                    x_as_image = make_grid(image.float(), nrow=4)
+                    img = x_as_image.permute(1, 2, 0).cpu().numpy()
+                    img = (img * 255).astype(np.uint8)
+                    gif.append(Image.fromarray(img))
 
-            if z1_type == 'noise':
-                z1_eval = torch.randn(config.training.batch_size, config.data.num_channels, 32, 32).cuda()
-            elif z1_type == 'z1':
-                z1_eval = next(iter(dataloader))[0][0].cuda()
-            images = rf.sample(z1_eval, cond, uncond)
-            # image sequences to gif
-            gif = []
-            for image in images:
-                # unnormalize
-                image = image * 0.5 + 0.5
-                image = image.clamp(0, 1)
-                x_as_image = make_grid(image.float(), nrow=4)
-                img = x_as_image.permute(1, 2, 0).cpu().numpy()
-                img = (img * 255).astype(np.uint8)
-                gif.append(Image.fromarray(img))
+                gif[0].save(
+                    f"{experiment_dir}/sample_{epoch}.gif",
+                    save_all=True,
+                    append_images=gif[1:],
+                    duration=100,
+                    loop=0,
+                )
 
-            gif[0].save(
-                f"{experiment_dir}/sample_{epoch}.gif",
-                save_all=True,
-                append_images=gif[1:],
-                duration=100,
-                loop=0,
-            )
+                last_img = gif[-1]
+                last_img.save(f"{experiment_dir}/sample_{epoch}_last.png")
 
-            last_img = gif[-1]
-            last_img.save(f"{experiment_dir}/sample_{epoch}_last.png")
+            rf.model.train()
 
-        rf.model.train()
+        if rank == 0:
+            eval()

@@ -51,6 +51,25 @@ class Sketchy32Dataset(Dataset):
             # sketch_photo_chunk = torch.stack([sketch_img, photo_img])
         return (sketch_img, photo_img), random.randint(0,9)
         # return photo_img, sketch_img
+        
+class Sketchy32NocondDataset(Dataset):
+    def __init__(self, data_dir="/root/app/minRF/data/sketchy_32",transform=None):
+        
+        self.data_dir = data_dir
+        self.transform = transform
+        
+    def __len__(self):
+        return len(glob(f"{self.data_dir}/img/*"))
+    
+    def __getitem__(self, index):
+        photo_img = Image.open(f"{self.data_dir}/img/{index}.jpg")
+        sketch_img = Image.open(f"{self.data_dir}/sk/{index}.jpg")
+        if self.transform:
+            photo_img = self.transform(photo_img)
+            sketch_img = self.transform(sketch_img)
+            # sketch_photo_chunk = torch.stack([sketch_img, photo_img])
+        return photo_img, random.randint(0,9)
+
 def get_sketchy_pair(photo_path):
     sketch_path = (photo_path.rsplit('.', 1)[0] + '-1.' + photo_path.rsplit('.', 1)[1]).replace('photo', 'sketch').replace('jpg','png')
     return photo_path, sketch_path
@@ -83,10 +102,6 @@ def get_ds(config, ds_name):
                 transforms.Normalize((0.5,), (0.5,)),
             ]
         )
-        # channels = 1
-        model = DiT_Llama(
-            config.data.num_channels, 32, dim=64, n_layers=6, n_heads=4, num_classes=10
-        ).cuda()
         ds = fdatasets(root="./data", train=True, download=True, transform=transform)
     elif  ds_name == 'sketchy':
         fdatasets = SketchyDataset
@@ -98,10 +113,6 @@ def get_ds(config, ds_name):
                 transforms.Normalize((0.5,), (0.5,)),
             ]
         )
-        # channels = 3
-        model = DiT_Llama(
-            config.data.num_channels, 32, dim=256, n_layers=10, n_heads=8, num_classes=10
-        ).cuda()
         ds = fdatasets(transform=transform)
     elif ds_name == 'sketchy32':
         fdatasets = Sketchy32Dataset
@@ -111,12 +122,18 @@ def get_ds(config, ds_name):
             ]
         )
         # channels = 3
-        model = DiT_Llama(
-            config.data.num_channels, 32, dim=256, n_layers=10, n_heads=8, num_classes=10
-        ).cuda()
+        ds = fdatasets(transform=transform)
+    elif ds_name == 'sketchy32nocond':
+        fdatasets = Sketchy32NocondDataset
+        transform = transforms.Compose(
+            [
+                transforms.ToTensor(),
+            ]
+        )
+        # channels = 3
         ds = fdatasets(transform=transform)
     else:
         raise NotImplementedError("This dataset is not yet implemented.")
     
-    return ds, transform, model
+    return ds, transform
         
