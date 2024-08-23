@@ -15,7 +15,7 @@ data.image_size = 32
 # data.image_size = 224
 data.num_channels = 3
 # data.dataset = 'sketchy'
-data.dataset = "sketchy32nocond"
+data.dataset = "sketchy32"
 # data.dataset = 'cifar'
 
 config.training = training = ml_collections.ConfigDict()

@@ -28,6 +28,12 @@ class RF:
         texp = t.view([b, *([1] * len(x.shape[1:]))])
         zt = (1 - texp) * x + texp * z1
         vtheta = self.model(zt, t, cond)
+        
+        # # 使用 torch.randperm 生成随机索引
+        # random_indices = torch.randperm(b)
+
+        # # 使用这些索引来打乱张量 x 的批次维度
+        # x = x[random_indices]
         batchwise_mse = ((z1 - x - vtheta) ** 2).mean(dim=list(range(1, len(x.shape))))
         tlist = batchwise_mse.detach().cpu().reshape(-1).tolist()
         ttloss = [(tv, tloss) for tv, tloss in zip(t, tlist)]
@@ -70,13 +76,13 @@ if __name__ == "__main__":
 
     config = ml_collections.ConfigDict()
     config.data = data = ml_collections.ConfigDict()
-    data.image_size = 16
+    data.image_size = 32
     # data.image_size = 224
     # data.num_channels = 768
     data.num_channels = 3
     data.output_channels = 3
     # data.dataset = 'sketchy'
-    data.dataset = "sketchy32nocond"
+    data.dataset = "sketchy32"
     # data.dataset = 'cifar'
 
     config.training = training = ml_collections.ConfigDict()
