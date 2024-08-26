@@ -29,11 +29,11 @@ class RF:
         zt = (1 - texp) * x + texp * z1
         vtheta = self.model(zt, t, cond)
         
-        # # 使用 torch.randperm 生成随机索引
-        # random_indices = torch.randperm(b)
+        # 使用 torch.randperm 生成随机索引
+        random_indices = torch.randperm(b)
 
-        # # 使用这些索引来打乱张量 x 的批次维度
-        # x = x[random_indices]
+        # 使用这些索引来打乱张量 x 的批次维度
+        x = x[random_indices]
         batchwise_mse = ((z1 - x - vtheta) ** 2).mean(dim=list(range(1, len(x.shape))))
         tlist = batchwise_mse.detach().cpu().reshape(-1).tolist()
         ttloss = [(tv, tloss) for tv, tloss in zip(t, tlist)]
@@ -92,8 +92,8 @@ if __name__ == "__main__":
     logging.basicConfig()
 
     results_dir = "results"
-    # z1_type = "z1"
-    z1_type = "noise"
+    z1_type = "z1"
+    # z1_type = "noise"
 
     parser = argparse.ArgumentParser(description="use cifar?")
     experiment_index = len(glob(f"{results_dir}/*"))
@@ -110,8 +110,8 @@ if __name__ == "__main__":
             in_channels=config.data.num_channels,
             out_channels=config.data.output_channels,
             input_size=config.data.image_size,
-            dim=256,
-            n_layers=10,
+            dim=1024,
+            n_layers=16,
             n_heads=8,
             num_classes=10,
         ).cuda()
@@ -147,7 +147,7 @@ if __name__ == "__main__":
         losscnt = {i: 1e-6 for i in range(10)}
         for i, (x, c) in tqdm(enumerate(dataloader)):
             # if i == 10:
-            # break
+            #     break
             if type(x) is list:
                 x = [i.cuda() for i in x]
             else:

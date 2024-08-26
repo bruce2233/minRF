@@ -39,6 +39,10 @@ class RF:
         else:
             z1 = torch.randn_like(x)
         b = x.size(0)
+        # 使用 torch.randperm 生成随机索引
+        random_indices = torch.randperm(b)
+        # 使用这些索引来打乱张量 x 的批次维度
+        x = x[random_indices]
         if self.ln:
             nt = torch.randn((b,)).to(x.device)
             t = torch.sigmoid(nt)
@@ -46,7 +50,9 @@ class RF:
             t = torch.rand((b,)).to(x.device)
         texp = t.view([b, *([1] * len(x.shape[1:]))])
         zt = (1 - texp) * x + texp * z1
+        # print(x.shape, z1.shape)
         vtheta = self.model(zt, t, cond)
+        # print(vtheta.shape)
         batchwise_mse = ((z1 - x - vtheta) ** 2).mean(dim=list(range(1, len(x.shape))))
         tlist = batchwise_mse.detach().cpu().reshape(-1).tolist()
         ttloss = [(tv, tloss) for tv, tloss in zip(t, tlist)]
@@ -71,7 +77,7 @@ class RF:
             images.append(z)
         return images
 
-
+# torchrun --nproc-per-node 
 if __name__ == "__main__":
     # train class conditional RF on mnist.
     import numpy as np
@@ -91,8 +97,8 @@ if __name__ == "__main__":
     logging.basicConfig()
 
     results_dir = "results"
-    # z1_type = "z1"
-    z1_type = "noise"
+    z1_type = "z1"
+    # z1_type = "noise"
 
     parser = argparse.ArgumentParser(description="use cifar?")
 
@@ -120,18 +126,19 @@ if __name__ == "__main__":
     # create model
     if config.data.dataset == "sketchy32" or "sketchy" or "cifar" or "sketchy32nocond":
         # channels = 3
+        # DiT_B_2 parameters
         model = DiT_Llama(
             config.data.num_channels,
-            32,
-            dim=256,
-            n_layers=10,
-            n_heads=8,
+            input_size=32,
+            dim=768,
+            n_layers=12,
+            n_heads=12,
             num_classes=10,
         ).cuda()
     elif config.data.dataset == "mnist":
         # channels = 1
         model = DiT_Llama(
-            config.data.num_channels, 32, dim=64, n_layers=6, n_heads=4, num_classes=10
+            config.data.num_channels, input_size=32, dim=64, n_layers=6, n_heads=4, num_classes=10
         ).cuda()
     model = DDP(model.to(device), device_ids=[rank])
     rf = RF(model)
@@ -162,7 +169,7 @@ if __name__ == "__main__":
     # log
     wandb.init(project=f"rf_{config.data.dataset}", group='DDPrf')
 
-    for epoch in tqdm(range(1000)):
+    for epoch in tqdm(range(1000),disable=dist.get_rank()!=0):
 
         lossbin = {i: 0 for i in range(10)}
         losscnt = {i: 1e-6 for i in range(10)}
