@@ -5,12 +5,14 @@ import torch
 import ml_collections
 from dataset import get_ds
 from tqdm import tqdm
+from diffusers import AutoencoderKL
 
 
 # ds = fdatasets(transform=transform)
 class RF:
-    def __init__(self, model, ln=True):
+    def __init__(self, model, vae: AutoencoderKL, ln=True):
         self.model = model
+        self.vae = vae
         self.ln = ln
 
     def forward(self, x, cond):
@@ -19,6 +21,9 @@ class RF:
             x = x[1]
         else:
             z1 = torch.randn_like(x)
+        z1 = self.vae.encode(z1).latent_dist.sample()
+        x = self.vae.encode(x).latent_dist.sample()
+        
         b = x.size(0)
         if self.ln:
             nt = torch.randn((b,)).to(x.device)
@@ -28,7 +33,7 @@ class RF:
         texp = t.view([b, *([1] * len(x.shape[1:]))])
         zt = (1 - texp) * x + texp * z1
         vtheta = self.model(zt, t, cond)
-        
+
         # 使用 torch.randperm 生成随机索引
         random_indices = torch.randperm(b)
 
@@ -44,7 +49,8 @@ class RF:
         b = z.size(0)
         dt = 1.0 / sample_steps
         dt = torch.tensor([dt] * b).to(z.device).view([b, *([1] * len(z.shape[1:]))])
-        images = [z]
+        images = [z] # 原图
+        z = self.vae.encode(z).latent_dist.sample() #vae
         for i in range(sample_steps, 0, -1):
             t = i / sample_steps
             t = torch.tensor([t] * b).to(z.device)
@@ -55,7 +61,8 @@ class RF:
                 vc = vu + cfg * (vc - vu)
 
             z = z - dt * vc
-            images.append(z)
+            z_o = self.vae.decode(z).sample #（b, 3, 224,224)
+            images.append(z_o) 
         return images
 
 
@@ -76,24 +83,25 @@ if __name__ == "__main__":
 
     config = ml_collections.ConfigDict()
     config.data = data = ml_collections.ConfigDict()
-    data.image_size = 32
+    data.image_size = 224 // 8
+    data.origin_image_size = 224
     # data.image_size = 224
     # data.num_channels = 768
-    data.num_channels = 3
-    data.output_channels = 3
+    data.num_channels = 4
+    data.output_channels = 4
     # data.dataset = 'sketchy'
-    data.dataset = "sketchy32"
+    data.dataset = "sketchy"
     # data.dataset = 'cifar'
 
     config.training = training = ml_collections.ConfigDict()
-    training.batch_size = 32
+    training.batch_size = 8
 
     ds, transform = get_ds(config, data.dataset)
     logging.basicConfig()
 
     results_dir = "results"
-    z1_type = "z1"
-    # z1_type = "noise"
+    # z1_type = "z1"
+    z1_type = "noise"
 
     parser = argparse.ArgumentParser(description="use cifar?")
     experiment_index = len(glob(f"{results_dir}/*"))
@@ -129,7 +137,13 @@ if __name__ == "__main__":
 
     model_size = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Number of parameters: {model_size}, {model_size / 1e6}M")
-    rf = RF(model)
+    vae = AutoencoderKL.from_pretrained(
+        "stabilityai/stable-diffusion-xl-base-1.0",
+        subfolder="vae",
+        revision=None,
+        variant=None,
+    ).cuda()
+    rf = RF(model,vae)
 
     optimizer = optim.Adam(model.parameters(), lr=5e-4)
     criterion = torch.nn.MSELoss()
@@ -185,7 +199,7 @@ if __name__ == "__main__":
 
             if z1_type == "noise":
                 z1_eval = torch.randn(
-                    config.training.batch_size, config.data.num_channels, 32, 32
+                    config.training.batch_size, 3,  config.data.origin_image_size, config.data.origin_image_size
                 ).cuda()
             elif z1_type == "z1":
                 z1_eval = next(iter(dataloader))[0][0].cuda()

@@ -30,7 +30,8 @@ class SketchyDataset(Dataset):
         if self.transform:
             photo_img = self.transform(photo_img)
             sketch_img = self.transform(sketch_img)
-        return sketch_img, 0
+        return photo_img, random.randint(0,9)
+        # return sketch_img, random.randint(0,9)
         # return photo_img, sketch_img
 
 class Sketchy32Dataset(Dataset):
@@ -108,11 +109,12 @@ def get_ds(config, ds_name):
         transform = transforms.Compose(
             [
                 transforms.ToTensor(),
-                transforms.Resize(32),
-                transforms.RandomHorizontalFlip(),
-                transforms.Normalize((0.5,), (0.5,)),
+                # transforms.Resize(32),
+                # transforms.RandomHorizontalFlip(),
+                # transforms.Normalize((0.5,), (0.5,)),
             ]
         )
+        # transform = None
         ds = fdatasets(transform=transform)
     elif ds_name == 'sketchy32':
         fdatasets = Sketchy32Dataset
