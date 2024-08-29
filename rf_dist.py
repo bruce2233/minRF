@@ -8,27 +8,24 @@ from tqdm import tqdm
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 import torch.distributed as dist
+from diffusers import AutoencoderKL
 
-config = ml_collections.ConfigDict()
-config.data = data = ml_collections.ConfigDict()
-data.image_size = 32
-# data.image_size = 224
-data.num_channels = 3
-# data.dataset = 'sketchy'
-data.dataset = "sketchy32"
-# data.dataset = 'cifar'
 
-config.training = training = ml_collections.ConfigDict()
-training.batch_size = 32
-training.global_batch_size = training.batch_size * 8
+from configs.config import get_config
+config = get_config()
+
+training = config.training
+training.batch_size = 8
+training.global_batch_size = training.batch_size * 3
 training.global_seed = 0
 
-ds, transform = get_ds(config, data.dataset)
+ds, transform = get_ds(config, config.data.dataset)
 
 
 # ds = fdatasets(transform=transform)
 class RF:
-    def __init__(self, model, ln=True):
+    def __init__(self, model, vae: AutoencoderKL, ln=True):
+        self.vae = vae
         self.model = model
         self.ln = ln
 
@@ -38,6 +35,8 @@ class RF:
             x = x[1]
         else:
             z1 = torch.randn_like(x)
+        z1 = self.vae.encode(z1).latent_dist.sample()
+        x = self.vae.encode(x).latent_dist.sample()
         b = x.size(0)
         # 使用 torch.randperm 生成随机索引
         random_indices = torch.randperm(b)
@@ -50,8 +49,9 @@ class RF:
             t = torch.rand((b,)).to(x.device)
         texp = t.view([b, *([1] * len(x.shape[1:]))])
         zt = (1 - texp) * x + texp * z1
-        # print(x.shape, z1.shape)
+        # print("x.shape: ",x.shape, z1.shape)
         vtheta = self.model(zt, t, cond)
+        # print("vtheta.shape: ",vtheta.shape, z1.shape, x.shape)
         # print(vtheta.shape)
         batchwise_mse = ((z1 - x - vtheta) ** 2).mean(dim=list(range(1, len(x.shape))))
         tlist = batchwise_mse.detach().cpu().reshape(-1).tolist()
@@ -64,6 +64,7 @@ class RF:
         dt = 1.0 / sample_steps
         dt = torch.tensor([dt] * b).to(z.device).view([b, *([1] * len(z.shape[1:]))])
         images = [z]
+        z = self.vae.encode(z).latent_dist.sample() #vae
         for i in range(sample_steps, 0, -1):
             t = i / sample_steps
             t = torch.tensor([t] * b).to(z.device)
@@ -74,7 +75,9 @@ class RF:
                 vc = vu + cfg * (vc - vu)
 
             z = z - dt * vc
-            images.append(z)
+            # images.append(z)
+            z_o = self.vae.decode(z).sample #（b, 3, 224,224)
+            images.append(z_o) 
         return images
 
 # torchrun --nproc-per-node 
@@ -128,11 +131,12 @@ if __name__ == "__main__":
         # channels = 3
         # DiT_B_2 parameters
         model = DiT_Llama(
-            config.data.num_channels,
-            input_size=32,
-            dim=768,
-            n_layers=12,
-            n_heads=12,
+            in_channels=config.data.num_channels,
+            out_channels=config.data.output_channels,
+            input_size=config.data.image_size,
+            dim=1024,
+            n_layers=16,
+            n_heads=8,
             num_classes=10,
         ).cuda()
     elif config.data.dataset == "mnist":
@@ -141,7 +145,13 @@ if __name__ == "__main__":
             config.data.num_channels, input_size=32, dim=64, n_layers=6, n_heads=4, num_classes=10
         ).cuda()
     model = DDP(model.to(device), device_ids=[rank])
-    rf = RF(model)
+    vae = AutoencoderKL.from_pretrained(
+        "stabilityai/stable-diffusion-xl-base-1.0",
+        subfolder="vae",
+        revision=None,
+        variant=None,
+    ).cuda()
+    rf = RF(model,vae)
     
     model_size = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Number of parameters: {model_size}, {model_size / 1e6}M")
@@ -209,10 +219,11 @@ if __name__ == "__main__":
 
                 if z1_type == "noise":
                     z1_eval = torch.randn(
-                        config.training.batch_size, config.data.num_channels, 32, 32
+                        config.training.batch_size, 3,  config.data.origin_image_size, config.data.origin_image_size
                     ).cuda()
                 elif z1_type == "z1":
                     z1_eval = next(iter(dataloader))[0][0].cuda()
+                    # print("z1_eval: ", z1_eval)
                 images = rf.sample(z1_eval, cond, uncond)
                 # image sequences to gif
                 gif = []
